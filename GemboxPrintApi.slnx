@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="backend-print/backend-print.csproj" Id="c47730ed-8efb-4d02-82a1-8fda78b06eea" />
+  <Project Path="test/test.csproj" Id="2caf5677-4854-4bac-bdfd-8cf12fe8ad8b" />
+</Solution>
