@@ -102,22 +102,12 @@ namespace backend_print.Controllers
 
             response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
 
-            // パストラバーサル防止: ファイル名のみ（パス不可）。拡張子 .pdf
-            var rawDownloadFileName = request.DownloadFileName;
-            var fileName = (rawDownloadFileName ?? "").Trim().Trim('"');
+            // ダウンロード名: ファイル名のみ採用（パスは落とす）
+            var fileName = Path.GetFileName((request.DownloadFileName ?? "").Trim().Trim('"'));
             if (string.IsNullOrWhiteSpace(fileName) || !IsSafeFileNameWithExtension(fileName, ".pdf"))
-            {
-                // 目視だと分からない不可視文字や全角混在の調査用
-                var codes = fileName == null
-                    ? "null"
-                    : string.Join(" ", fileName.Select(c => $"U+{(int)c:X4}"));
-                SimpleFileLogger.Log(
-                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                    $"[api] GeneratePdf bad request (downloadFileName). correlationId={correlationId}, raw='{rawDownloadFileName}', normalized='{fileName}', codes={codes}");
                 return Request.CreateErrorResponse(
                     HttpStatusCode.BadRequest,
                     "downloadFileName が未指定または不正です。ファイル名のみ（例: example.pdf）を指定してください。");
-            }
 
             response.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
             {
@@ -202,12 +192,18 @@ namespace backend_print.Controllers
         /// </summary>
         private static bool IsSafeFileNameWithExtension(string name, string extensionWithDot)
         {
+            if (string.IsNullOrWhiteSpace(name)) return false;
             if (string.IsNullOrWhiteSpace(extensionWithDot)) return false;
             if (!extensionWithDot.StartsWith(".", StringComparison.Ordinal)) return false;
 
+            // ファイル名のみ許可（パス混入を拒否）
             var f = Path.GetFileName(name);
             if (!string.Equals(f, name, StringComparison.OrdinalIgnoreCase)) return false;
+
+            // 不正文字を拒否
             if (f.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return false;
+
+            // 拡張子チェック（.pdf / .xlsx）
             return f.EndsWith(extensionWithDot, StringComparison.OrdinalIgnoreCase);
         }
     }
