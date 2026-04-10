@@ -103,12 +103,17 @@ namespace backend_print.Controllers
             response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
 
             // パストラバーサル防止: ファイル名のみ（パス不可）。拡張子 .pdf
-            var fileName = (request.DownloadFileName ?? "").Trim();
+            var rawDownloadFileName = request.DownloadFileName;
+            var fileName = (rawDownloadFileName ?? "").Trim().Trim('"');
             if (string.IsNullOrWhiteSpace(fileName) || !IsSafeFileNameWithExtension(fileName, ".pdf"))
             {
+                // 目視だと分からない不可視文字や全角混在の調査用
+                var codes = fileName == null
+                    ? "null"
+                    : string.Join(" ", fileName.Select(c => $"U+{(int)c:X4}"));
                 SimpleFileLogger.Log(
                     ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                    $"[api] GeneratePdf bad request (downloadFileName). correlationId={correlationId}, downloadFileName='{request.DownloadFileName}'");
+                    $"[api] GeneratePdf bad request (downloadFileName). correlationId={correlationId}, raw='{rawDownloadFileName}', normalized='{fileName}', codes={codes}");
                 return Request.CreateErrorResponse(
                     HttpStatusCode.BadRequest,
                     "downloadFileName が未指定または不正です。ファイル名のみ（例: example.pdf）を指定してください。");
