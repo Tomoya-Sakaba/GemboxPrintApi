@@ -39,27 +39,62 @@ namespace backend_print.Controllers
         [Route("pdf")]
         public async Task<HttpResponseMessage> GeneratePdf([FromBody] GemBoxPrintRequestDto request)
         {
-            if (request == null)
-                return Request.CreateErrorResponse(HttpStatusCode.BadRequest, "リクエストボディが空です。");
+            var correlationId = GetCorrelationId();
+            SimpleFileLogger.Log(
+                ConfigurationManager.AppSettings["GemBoxLogFilePath"],
+                $"[api] GeneratePdf start. correlationId={correlationId}");
 
-            if (string.IsNullOrWhiteSpace(request.TemplateFileName) || !IsSafeTemplateFileName(request.TemplateFileName))
+            if (request == null)
+            {
+                SimpleFileLogger.Log(
+                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
+                    $"[api] GeneratePdf bad request (null body). correlationId={correlationId}");
+                return Request.CreateErrorResponse(HttpStatusCode.BadRequest, "リクエストボディが空です。");
+            }
+
+            if (string.IsNullOrWhiteSpace(request.TemplateFileName) ||
+                !IsSafeFileNameWithExtension(request.TemplateFileName.Trim(), ".xlsx"))
+            {
+                SimpleFileLogger.Log(
+                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
+                    $"[api] GeneratePdf bad request (templateFileName). correlationId={correlationId}, templateFileName='{request.TemplateFileName}'");
                 return Request.CreateErrorResponse(HttpStatusCode.BadRequest, "templateFileName が不正です（ファイル名のみ、.xlsx を指定）。");
+            }
 
             var templatePath = Path.Combine(_templateBasePath, request.TemplateFileName);
             if (!File.Exists(templatePath))
+            {
+                SimpleFileLogger.Log(
+                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
+                    $"[api] GeneratePdf not found (template). correlationId={correlationId}, templatePath='{templatePath}'");
                 return Request.CreateErrorResponse(HttpStatusCode.NotFound, "テンプレートファイルが見つかりません。");
+            }
 
             var merged = MergeToGemBoxData(request);
             if (merged == null || merged.Count == 0)
-                return Request.CreateErrorResponse(HttpStatusCode.BadRequest, "data / tables が空です。");
+            {
+                SimpleFileLogger.Log(
+                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
+                    $"[api] GeneratePdf bad request (empty data/tables). correlationId={correlationId}");
+                return Request.CreateErrorResponse(
+                    HttpStatusCode.BadRequest,
+                    "印刷データが指定されていません。data もしくは tables のどちらかに値を指定してください。");
+            }
 
+            // GeneratePdf は CPU/IO が重くなり得るため、タイムアウト付きで別タスクとして実行する。
             var work = Task.Run(() => _pdfService.GeneratePdf(templatePath, merged));
             var finished = await Task.WhenAny(work, Task.Delay(TimeSpan.FromSeconds(_timeoutSeconds)));
             if (finished != work)
+            {
+                SimpleFileLogger.Log(
+                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
+                    $"[api] GeneratePdf timeout. correlationId={correlationId}, timeoutSeconds={_timeoutSeconds}");
                 return Request.CreateErrorResponse((HttpStatusCode)504, $"PDF生成がタイムアウトしました（{_timeoutSeconds}秒）。");
+            }
 
             var pdfStream = await work;
 
+            // PDF をストリームで返却（バイト配列に全読み込みしない）。
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StreamContent(pdfStream)
@@ -67,16 +102,44 @@ namespace backend_print.Controllers
 
             response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
 
-            var fileName = string.IsNullOrWhiteSpace(request.DownloadFileName)
-                ? "document.pdf"
-                : Path.GetFileName(request.DownloadFileName);
+            // パストラバーサル防止: ファイル名のみ（パス不可）。拡張子 .pdf
+            var fileName = (request.DownloadFileName ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(fileName) || !IsSafeFileNameWithExtension(fileName, ".pdf"))
+            {
+                SimpleFileLogger.Log(
+                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
+                    $"[api] GeneratePdf bad request (downloadFileName). correlationId={correlationId}, downloadFileName='{request.DownloadFileName}'");
+                return Request.CreateErrorResponse(
+                    HttpStatusCode.BadRequest,
+                    "downloadFileName が未指定または不正です。ファイル名のみ（例: example.pdf）を指定してください。");
+            }
 
             response.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
             {
                 FileName = fileName
             };
 
+            SimpleFileLogger.Log(
+                ConfigurationManager.AppSettings["GemBoxLogFilePath"],
+                $"[api] GeneratePdf ok. correlationId={correlationId}, fileName='{fileName}', template='{request.TemplateFileName}'");
             return response;
+        }
+
+        private string GetCorrelationId()
+        {
+            try
+            {
+                if (Request != null && Request.Headers != null &&
+                    Request.Headers.TryGetValues("X-Correlation-Id", out var values))
+                {
+                    var v = values?.FirstOrDefault();
+                    if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+                }
+            }
+            catch
+            {
+            }
+            return "-";
         }
 
         /// <summary>
@@ -130,14 +193,17 @@ namespace backend_print.Controllers
         }
 
         /// <summary>
-        /// パストラバーサル防止: ファイル名のみ、拡張子 .xlsx
+        /// パストラバーサル防止: ファイル名のみ。拡張子を指定して検証する。
         /// </summary>
-        private static bool IsSafeTemplateFileName(string name)
+        private static bool IsSafeFileNameWithExtension(string name, string extensionWithDot)
         {
+            if (string.IsNullOrWhiteSpace(extensionWithDot)) return false;
+            if (!extensionWithDot.StartsWith(".", StringComparison.Ordinal)) return false;
+
             var f = Path.GetFileName(name);
             if (!string.Equals(f, name, StringComparison.OrdinalIgnoreCase)) return false;
             if (f.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return false;
-            return f.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase);
+            return f.EndsWith(extensionWithDot, StringComparison.OrdinalIgnoreCase);
         }
     }
 }
