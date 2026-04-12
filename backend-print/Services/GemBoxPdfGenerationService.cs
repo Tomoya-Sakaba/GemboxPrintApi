@@ -22,8 +22,7 @@ namespace backend_print.Services
             // テンプレExcelをコピーした「作業用xlsx」と、生成した「作業用pdf」をここに置く。
             _tempPath = Path.GetTempPath();
 
-            // GemBoxライセンスキー（Web.config）。
-            // 未設定の場合は FREE-LIMITED-KEY で動作（機能/ページ制限がかかる可能性あり）。
+            // GemBoxライセンスキー（Web.config）。本番では製品キーを設定する。
             var key = ConfigurationManager.AppSettings["GemBoxSpreadsheetLicenseKey"];
             SpreadsheetInfo.SetLicense(string.IsNullOrWhiteSpace(key) ? "FREE-LIMITED-KEY" : key);
         }
@@ -107,8 +106,7 @@ namespace backend_print.Services
             // シートが複数ある帳票に拡張する場合は Worksheets をループする。
             var ws = workbook.Worksheets[0];
 
-            // 2) 明細（テーブル）を展開する。
-            // {{table:history}} のようなマーカー行を見つけたら、その行を複製して行数ぶん埋める。
+            // 2) 明細（テーブル）を展開する（同一シートに {{table:xxx}} を複数置ける。上から順に展開）。
             ExpandTableRegions(ws, data);
 
             // 3) 単票プレースホルダ置換のための正規表現。
@@ -121,6 +119,7 @@ namespace backend_print.Services
             if (used == null)
             {
                 // 置換対象が見つからなくても、編集結果（明細展開など）があるかもしれないので保存はする。
+                // 印刷設定はテンプレのまま（コードで上書きしない。Excel の印刷プレビューと GemBox PDF を一致させるため）。
                 workbook.Save(excelPath);
                 return;
             }
@@ -165,82 +164,149 @@ namespace backend_print.Services
                 }
             }
 
-            // 4) 置換結果を同じパスに保存
+            // 4) 置換結果を同じパスに保存（印刷設定はテンプレのまま）
             workbook.Save(excelPath);
         }
 
         private void ExpandTableRegions(ExcelWorksheet ws, Dictionary<string, object> data)
         {
-            // --- 明細（テーブル）展開 ---
-            // テンプレの“行テンプレ”に以下を配置する:
-            // - {{table:history}}  ← テーブル開始マーカー（どのセルでもOK）
-            // - 同じ行に {{history.date}} / {{history.note}} のようなセルを配置
+            // --- 明細（テーブル）展開（複数テーブル可） ---
+            // 各「行テンプレ」に {{table:xxx}} と同じ行に {{xxx.col}} を並べる。
+            // data["xxx"] = IEnumerable<Dictionary<string, object>>
             //
-            // data 側は:
-            // - data["history"] = IEnumerable<Dictionary<string, object>>
-            //
-            // 展開処理:
-            // - マーカー行を見つけたら、その行を必要行数ぶん InsertCopy で複製
-            // - 複製した各行について FillTableRow で {{history.xxx}} を埋める
+            // テンプレ上の複数マーカーは上から順に処理する。先行テーブルで行挿入すると
+            // 後続マーカーの行番号がずれるため、挿入行数を累積オフセットに加算する。
 
+            // {{table:キー名}} の形式を検出する正規表現（キー名は英数字とアンダースコア）。
             var tableStartRegex = new Regex(@"\{\{\s*table\s*:\s*([a-zA-Z0-9_]+)\s*\}\}");
+
+            // シート内の使用セル範囲のみ走査する（全セル走査は避ける）。
             var used = ws.GetUsedCellRange(true);
             if (used == null) return;
 
+            // 使用範囲を走査し、{{table:xxx}} を含むセルをすべて列挙する。
+            var markers = new List<TableMarker>();
             for (int r = used.FirstRowIndex; r <= used.LastRowIndex; r++)
             {
                 for (int c = used.FirstColumnIndex; c <= used.LastColumnIndex; c++)
                 {
                     var cell = ws.Cells[r, c];
+                    // 文字列セルのみ（数値・数式セルは置換マーカーとして扱わない）。
                     if (cell.ValueType != CellValueType.String) continue;
                     var s = cell.StringValue;
                     if (string.IsNullOrWhiteSpace(s)) continue;
 
-                    // このセルが {{table:xxx}} を含むか判定
                     var m = tableStartRegex.Match(s);
                     if (!m.Success) continue;
 
-                    // tableKey = "history" 等
-                    var tableKey = m.Groups[1].Value.Trim();
-
-                    // マーカー文字列は出力不要なので消す（セルを空にする）
-                    cell.Value = "";
-
-                    // data に tableKey が無い場合は何もしない（テンプレ側の書き間違い想定）
-                    if (!data.TryGetValue(tableKey, out var rowsObj)) return;
-
-                    // rowsObj を IEnumerable<Dictionary<string, object>> として扱う
-                    var rows = rowsObj as IEnumerable<Dictionary<string, object>>;
-                    if (rows == null) return;
-
-                    // 複数回数えないようにList化
-                    var list = rows.ToList();
-
-                    if (list.Count == 0)
-                    {
-                        // 明細が0件の場合:
-                        // - 行は残す（レイアウト維持）
-                        // - {{history.xxx}} だけ消して空欄行にする
-                        ClearTableRowPlaceholders(ws, r, tableKey);
-                        return;
-                    }
-
-                    if (list.Count > 1)
-                    {
-                        // 明細が2件以上の場合:
-                        // - 現在行(r)がテンプレ行なので、下に (件数-1) 行ぶんコピー挿入する
-                        // - InsertCopy は “書式/罫線/結合” を含めてコピーされる
-                        ws.Rows.InsertCopy(r + 1, list.Count - 1, ws.Rows[r]);
-                    }
-
-                    // 各行に対して {{history.xxx}} を埋める
-                    for (int i = 0; i < list.Count; i++)
-                        FillTableRow(ws, r + i, tableKey, list[i]);
-
-                    // 1つのテーブルを展開したら終了（複数テーブル対応は必要になったら拡張）
-                    return;
+                    // 見つかった座標とテーブルキー（例: parts / linked）を保持する。
+                    markers.Add(new TableMarker(r, c, m.Groups[1].Value.Trim()));
                 }
             }
+
+            // マーカーが無ければテーブル展開は行わない。
+            if (markers.Count == 0) return;
+
+            // 上から下へ（行が若い順、同じ行なら左の列が優先）で安定ソートする。
+            markers.Sort((a, b) =>
+                a.TemplateRow != b.TemplateRow
+                    ? a.TemplateRow.CompareTo(b.TemplateRow)
+                    : a.MarkerColumn.CompareTo(b.MarkerColumn));
+
+            // 同一行に {{table:A}} と {{table:B}} が並ぶ場合は、最初に見つかった列だけを採用する（重複行を除外）。
+            var seenTemplateRows = new HashSet<int>();
+            var ordered = new List<TableMarker>();
+            foreach (var mk in markers)
+            {
+                if (seenTemplateRows.Contains(mk.TemplateRow)) continue;
+                seenTemplateRows.Add(mk.TemplateRow);
+                ordered.Add(mk);
+            }
+
+            // テンプレ上の行番号は「固定」だが、上のテーブルで行挿入すると下のマーカーの実際の行番号がずれる。
+            // rowOffset に、これまでに挿入した「増えた行数」を足し、ExpandOneTableRegion には実際の行番号を渡す。
+            var rowOffset = 0;
+            foreach (var mk in ordered)
+            {
+                var row = mk.TemplateRow + rowOffset;
+                // ExpandOneTableRegion が返すのは「下に増えた行数」。次のマーカー用オフセットに加算する。
+                rowOffset += ExpandOneTableRegion(ws, row, mk.MarkerColumn, mk.TableKey, data, tableStartRegex);
+            }
+        }
+
+        /// <summary>テンプレ上の行・列（ファイル読み込み直後の座標）</summary>
+        private struct TableMarker
+        {
+            public readonly int TemplateRow;
+            public readonly int MarkerColumn;
+            public readonly string TableKey;
+
+            public TableMarker(int templateRow, int markerColumn, string tableKey)
+            {
+                TemplateRow = templateRow;
+                MarkerColumn = markerColumn;
+                TableKey = tableKey;
+            }
+        }
+
+        /// <summary>
+        /// 1 テーブル分を展開し、テンプレートに対して「下に増えた行数」（件数-1、0件は0）を返す。
+        /// </summary>
+        private int ExpandOneTableRegion(
+            ExcelWorksheet ws,
+            int row,
+            int markerColumn,
+            string tableKey,
+            Dictionary<string, object> data,
+            Regex tableStartRegex)
+        {
+            // マーカーが置かれているセル（通常は {{table:tableKey}} が入っているセル）。
+            var cell = ws.Cells[row, markerColumn];
+            if (cell.ValueType != CellValueType.String)
+                return 0;
+
+            var raw = cell.StringValue;
+            // まだ {{table:...}} でない（オフセットずれで別行を指している等）なら何もしない。
+            if (string.IsNullOrWhiteSpace(raw) || !tableStartRegex.IsMatch(raw))
+                return 0;
+
+            // マーカー文字列は消し、同じ行に {{tableKey.列名}} だけが残る想定で以降の置換に進む。
+            cell.Value = "";
+
+            // data にテーブルキーが無い場合は、行テンプレ内の {{tableKey.xxx}} を空にするだけ。
+            if (!data.TryGetValue(tableKey, out var rowsObj))
+            {
+                ClearTableRowPlaceholders(ws, row, tableKey);
+                return 0;
+            }
+
+            // 明細は IEnumerable<Dictionary<string, object>> のみ対応（JSON からの配列行）。
+            var rows = rowsObj as IEnumerable<Dictionary<string, object>>;
+            if (rows == null)
+            {
+                ClearTableRowPlaceholders(ws, row, tableKey);
+                return 0;
+            }
+
+            var list = rows.ToList();
+
+            // 0件なら行は増やさず、プレースホルダだけ除去する。
+            if (list.Count == 0)
+            {
+                ClearTableRowPlaceholders(ws, row, tableKey);
+                return 0;
+            }
+
+            // 2件目以降は「テンプレの1行」をコピーして行を挿入する（1件目は既存行をそのまま使う）。
+            if (list.Count > 1)
+                ws.Rows.InsertCopy(row + 1, list.Count - 1, ws.Rows[row]);
+
+            // 各行について、{{tableKey.列名}} を行データで置換する。
+            for (int i = 0; i < list.Count; i++)
+                FillTableRow(ws, row + i, tableKey, list[i]);
+
+            // 呼び出し元の rowOffset 用: テンプレより増えた行数（件数 1 なら 0）。
+            return list.Count > 1 ? list.Count - 1 : 0;
         }
 
         private void FillTableRow(ExcelWorksheet ws, int rowIndex, string tableKey, Dictionary<string, object> rowData)
@@ -304,7 +370,9 @@ namespace backend_print.Services
             // GemBoxによる変換:
             // - ExcelFile.Load でxlsxを読み
             // - Save(pdfPath) でPDFとして書き出す
-            // ※テンプレの印刷範囲やセル結合/色/罫線などは、基本的にExcel側の設定を反映する。
+            //
+            // 印刷オプションはテンプレに保存されたものをそのまま使う（コードで FitWorksheetWidthToPages 等を上書きしない）。
+            // 以前は上書きしていたため、Excel の印刷プレビューでは２ページなのに PDF だけ１ページになる事象があった。
             var workbook = ExcelFile.Load(excelPath);
             workbook.Save(pdfPath);
         }
