@@ -71,18 +71,19 @@ namespace backend_print.Controllers
             }
 
             var merged = MergeToGemBoxData(request);
-            if (merged == null || merged.Count == 0)
+            var picturesMap = BuildPicturesDictionary(request);
+            if (merged.Count == 0 && picturesMap.Count == 0)
             {
                 SimpleFileLogger.Log(
                     ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                    $"[api] GeneratePdf bad request (empty data/tables). correlationId={correlationId}");
+                    $"[api] GeneratePdf bad request (empty data/tables/pictures). correlationId={correlationId}");
                 return Request.CreateErrorResponse(
                     HttpStatusCode.BadRequest,
-                    "印刷データが指定されていません。data もしくは tables のどちらかに値を指定してください。");
+                    "印刷データが指定されていません。data / tables / pictures のいずれかに値を指定してください。");
             }
 
             // GeneratePdf は CPU/IO が重くなり得るため、タイムアウト付きで別タスクとして実行する。
-            var work = Task.Run(() => _pdfService.GeneratePdf(templatePath, merged));
+            var work = Task.Run(() => _pdfService.GeneratePdf(templatePath, merged, picturesMap));
             var finished = await Task.WhenAny(work, Task.Delay(TimeSpan.FromSeconds(_timeoutSeconds)));
             if (finished != work)
             {
@@ -102,7 +103,7 @@ namespace backend_print.Controllers
 
             response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
 
-            // ダウンロード名: ファイル名のみ採用（パスは落とす）
+            // Download name: use file name only (strip path).
             var fileName = Path.GetFileName((request.DownloadFileName ?? "").Trim().Trim('"'));
             if (string.IsNullOrWhiteSpace(fileName) || !IsSafeFileNameWithExtension(fileName, ".pdf"))
                 return Request.CreateErrorResponse(
@@ -138,7 +139,7 @@ namespace backend_print.Controllers
         }
 
         /// <summary>
-        /// data（単票）と tables（明細）を GemBoxPdfGenerationService が期待する1つの Dictionary にまとめる。
+        /// data（単票）と tables（明細）のみをマージする。画像は <see cref="BuildPicturesDictionary"/> で別途渡す。
         /// </summary>
         private static Dictionary<string, object> MergeToGemBoxData(GemBoxPrintRequestDto request)
         {
@@ -169,6 +170,22 @@ namespace backend_print.Controllers
             }
 
             return merged;
+        }
+
+        /// <summary>
+        /// request.Pictures を GemBoxPdfGenerationService 用の辞書にする（dataとはマージしない）。
+        /// </summary>
+        private static Dictionary<string, string> BuildPicturesDictionary(GemBoxPrintRequestDto request)
+        {
+            var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (request?.Pictures == null) return d;
+            foreach (var kv in request.Pictures)
+            {
+                if (string.IsNullOrWhiteSpace(kv.Key)) continue;
+                var v = NormalizeValue(kv.Value);
+                d[kv.Key.Trim()] = v?.ToString() ?? "";
+            }
+            return d;
         }
 
         private static object NormalizeValue(object v)

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -27,7 +28,13 @@ namespace backend_print.Services
             SpreadsheetInfo.SetLicense(string.IsNullOrWhiteSpace(key) ? "FREE-LIMITED-KEY" : key);
         }
 
-        public Stream GeneratePdf(string templatePath, Dictionary<string, object> data)
+        /// <summary>テンプレをコピーし、単票・明細は <paramref name="data"/>、画像プレースホルダは <paramref name="pictures"/> だけで解決して PDF 化する。</summary>
+        /// <param name="data">単票・明細（テーブル）。request.Data と request.Tables のマージ。</param>
+        /// <param name="pictures">画像��用。セル全体が <c>{{key}}</c> のときのみ参照（data とは別辞書）。</param>
+        public Stream GeneratePdf(
+            string templatePath,
+            Dictionary<string, object> data,
+            IDictionary<string, string> pictures)
         {
             // ここは「テンプレのコピー → 埋め込み → PDF変換 → MemoryStreamで返す」までを担当する。
             // API側（Controller）はこのStreamをそのままHTTPレスポンスに載せる。
@@ -49,9 +56,9 @@ namespace backend_print.Services
                 File.Copy(templatePath, tempExcelPath, true);
 
                 // --- 2) プレースホルダ置換（Excel編集） ---
-                // tempExcelPath の中の {{...}} を data で置換する。
+                // tempExcelPath の中の {{...}} を data / pictures で置換する。
                 // SimpleFileLogger.Log(GetLogPath(), $"EmbedData start. elapsedMs={sw.ElapsedMilliseconds}");
-                EmbedData(tempExcelPath, data);
+                EmbedData(tempExcelPath, data, pictures);
                 // SimpleFileLogger.Log(GetLogPath(), $"EmbedData end. elapsedMs={sw.ElapsedMilliseconds}");
 
                 // --- 3) Excel → PDF 変換 ---
@@ -91,12 +98,15 @@ namespace backend_print.Services
             return ConfigurationManager.AppSettings["GemBoxLogFilePath"];
         }
 
-        private void EmbedData(string excelPath, Dictionary<string, object> data)
+        private void EmbedData(
+            string excelPath,
+            Dictionary<string, object> data,
+            IDictionary<string, string> pictures)
         {
             // --- Excelの埋め込み処理 ---
             // 1) Excelロード
             // 2) 明細（table）展開
-            // 3) 単票プレースホルダ置換
+            // 3) 単票プレースホルダ置換（画像はセルへ貼り付け）
             // 4) 保存
 
             // 1) Excelをロード（.xlsx）
@@ -144,6 +154,22 @@ namespace backend_print.Services
                     // "{{" が無いセルは対象外（正規表現の無駄打ち回避）
                     if (s.IndexOf("{{", StringComparison.Ordinal) < 0) continue;
 
+                    // 画像: セル全体が {{key}} の場合のみ対象にする（文章中へ画像を埋める用途は想定しない）
+                    // 例: 結合セルの枠内に {{picture1}} を置き、data["picture1"]="test1.png" を渡す。
+                    var m0 = regex.Match(s);
+                    if (m0.Success && m0.Value == s.Trim())
+                    {
+                        var key0 = m0.Groups[1].Value.Trim();
+                        if (pictures != null &&
+                            pictures.TryGetValue(key0, out var imgRef) &&
+                            !string.IsNullOrWhiteSpace(imgRef) &&
+                            TryEmbedPicture(ws, cell, imgRef.Trim().Trim('"')))
+                        {
+                            cell.Value = "";
+                            continue;
+                        }
+                    }
+
                     // セル内の {{key}} を data[key] に置換する。
                     // 見つからないキーは空文字にする（テンプレ側の書き間違いでも処理は継続）
                     var replaced = regex.Replace(s, m =>
@@ -166,6 +192,103 @@ namespace backend_print.Services
 
             // 4) 置換結果を同じパスに保存（印刷設定はテンプレのまま）
             workbook.Save(excelPath);
+        }
+
+        private bool TryEmbedPicture(ExcelWorksheet ws, ExcelCell cell, string imageReference)
+        {
+            if (ws == null || cell == null) return false;
+            if (string.IsNullOrWhiteSpace(imageReference)) return false;
+
+            // 画像ファイル参照は「絶対パス」または「GemBoxPictureBasePath + ファイル名」を許可する。
+            var basePath = (ConfigurationManager.AppSettings["GemBoxPictureBasePath"] ?? @"C:\app_data\picuture").Trim();
+            var path = imageReference.Trim().Trim('"');
+            if (!Path.IsPathRooted(path))
+                path = Path.Combine(basePath, path);
+
+            // 拡張子が画像っぽいもののみ対象
+            var ext = (Path.GetExtension(path) ?? "").ToLowerInvariant();
+            switch (ext)
+            {
+                case ".png":
+                case ".jpg":
+                case ".jpeg":
+                case ".gif":
+                case ".bmp":
+                case ".tif":
+                case ".tiff":
+                case ".svg":
+                case ".emf":
+                case ".wmf":
+                    break;
+                default:
+                    return false;
+            }
+
+            if (!File.Exists(path)) return false;
+
+            // 結合セルなら結合範囲、そうでなければ単セルを枠として使う
+            var range = cell.MergedRange;
+            var firstRow = range != null ? range.FirstRowIndex : cell.Row.Index;
+            var firstCol = range != null ? range.FirstColumnIndex : cell.Column.Index;
+            var lastRow = range != null ? range.LastRowIndex : cell.Row.Index;
+            var lastCol = range != null ? range.LastColumnIndex : cell.Column.Index;
+
+            var topLeft = ws.Cells[firstRow, firstCol].Name;
+            var bottomRight = ws.Cells[lastRow, lastCol].Name;
+
+            var picture = ws.Pictures.Add(path, topLeft, bottomRight);
+            // 画像のアスペクト比をセルに収めて余白で中央寄せする。
+            picture.Position.Mode = PositioningMode.MoveAndSize;
+            var boxLeft = picture.Position.Left;
+            var boxTop = picture.Position.Top;
+            var boxW = picture.Position.Width;
+            var boxH = picture.Position.Height;
+            if (boxW <= 0 || boxH <= 0)
+                return true;
+
+            int pixW;
+            int pixH;
+            try
+            {
+                using (var img = Image.FromFile(path))
+                {
+                    pixW = img.Width;
+                    pixH = img.Height;
+                }
+            }
+            catch
+            {
+                // If pixel size unknown (e.g. some formats), keep default stretch.
+                return true;
+            }
+
+            if (pixW <= 0 || pixH <= 0)
+                return true;
+
+            var imgAspect = (double)pixW / pixH;
+            var boxAspect = boxW / boxH;
+            double fittedW;
+            double fittedH;
+            if (imgAspect > boxAspect)
+            {
+                fittedW = boxW;
+                fittedH = boxW / imgAspect;
+            }
+            else
+            {
+                fittedH = boxH;
+                fittedW = boxH * imgAspect;
+            }
+
+            var padX = Math.Max(0, (boxW - fittedW) / 2.0);
+            var padY = Math.Max(0, (boxH - fittedH) / 2.0);
+
+            picture.Position.Mode = PositioningMode.FreeFloating;
+            picture.Position.Left = boxLeft + padX;
+            picture.Position.Top = boxTop + padY;
+            picture.Position.Width = fittedW;
+            picture.Position.Height = fittedH;
+            return true;
         }
 
         private void ExpandTableRegions(ExcelWorksheet ws, Dictionary<string, object> data)
