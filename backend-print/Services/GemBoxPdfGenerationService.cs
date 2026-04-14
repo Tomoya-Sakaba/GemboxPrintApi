@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using GemBox.Spreadsheet;
+using log4net;
 
 namespace backend_print.Services
 {
@@ -15,6 +16,8 @@ namespace backend_print.Services
     /// </summary>
     public class GemBoxPdfGenerationService
     {
+        private static readonly ILog Log = LogManager.GetLogger(typeof(GemBoxPdfGenerationService));
+
         private readonly string _tempPath;
 
         public GemBoxPdfGenerationService()
@@ -30,7 +33,7 @@ namespace backend_print.Services
 
         /// <summary>テンプレをコピーし、単票・明細は <paramref name="data"/>、画像プレースホルダは <paramref name="pictures"/> だけで解決して PDF 化する。</summary>
         /// <param name="data">単票・明細（テーブル）。request.Data と request.Tables のマージ。</param>
-        /// <param name="pictures">画像��用。セル全体が <c>{{key}}</c> のときのみ参照（data とは別辞書）。</param>
+        /// <param name="pictures">画像用。セル全体が <c>{{key}}</c> のときのみ参照（data とは別辞書）。</param>
         public Stream GeneratePdf(
             string templatePath,
             Dictionary<string, object> data,
@@ -52,35 +55,33 @@ namespace backend_print.Services
                 // 元テンプレを直接編集すると、同時実行時に競合する/テンプレが壊れる可能性があるため、
                 // 必ず一時ファイルにコピーしてから編集する。
                 tempExcelPath = Path.Combine(_tempPath, $"gembox_{Guid.NewGuid()}.xlsx");
-                // SimpleFileLogger.Log(GetLogPath(), $"GeneratePdf start. templatePath='{templatePath}', tempExcel='{tempExcelPath}'");
+                Log.Info($"PDF生成開始. templatePath='{templatePath}', tempExcel='{tempExcelPath}'");
                 File.Copy(templatePath, tempExcelPath, true);
 
                 // --- 2) プレースホルダ置換（Excel編集） ---
                 // tempExcelPath の中の {{...}} を data / pictures で置換する。
-                // SimpleFileLogger.Log(GetLogPath(), $"EmbedData start. elapsedMs={sw.ElapsedMilliseconds}");
+                Log.Debug($"Excel埋め込み開始. elapsedMs={sw.ElapsedMilliseconds}");
                 EmbedData(tempExcelPath, data, pictures);
-                // SimpleFileLogger.Log(GetLogPath(), $"EmbedData end. elapsedMs={sw.ElapsedMilliseconds}");
+                Log.Debug($"Excel埋め込み完了. elapsedMs={sw.ElapsedMilliseconds}");
 
                 // --- 3) Excel → PDF 変換 ---
                 // GemBoxは Save(pdfPath) でPDF出力できる。
                 tempPdfPath = Path.Combine(_tempPath, $"gembox_{Guid.NewGuid()}.pdf");
-                // SimpleFileLogger.Log(GetLogPath(), $"ConvertExcelToPdf start. tempPdf='{tempPdfPath}', elapsedMs={sw.ElapsedMilliseconds}");
+                Log.Debug($"PDF変換開始. tempPdf='{tempPdfPath}', elapsedMs={sw.ElapsedMilliseconds}");
                 ConvertExcelToPdf(tempExcelPath, tempPdfPath);
-                // SimpleFileLogger.Log(GetLogPath(), $"ConvertExcelToPdf end. pdfBytes={new FileInfo(tempPdfPath).Length}, elapsedMs={sw.ElapsedMilliseconds}");
+                Log.Debug($"PDF変換完了. pdfBytes={new FileInfo(tempPdfPath).Length}, elapsedMs={sw.ElapsedMilliseconds}");
 
                 // --- 4) PDFファイルをメモリへ読み込み、Streamで返す ---
                 // API側でレスポンスに載せやすいよう MemoryStream にする。
                 var pdfStream = new MemoryStream(File.ReadAllBytes(tempPdfPath));
                 // 読み込み直後はPositionが末尾になり得るので、明示的に先頭へ戻す。
                 pdfStream.Position = 0;
-                // SimpleFileLogger.Log(GetLogPath(), $"GeneratePdf done. elapsedMs={sw.ElapsedMilliseconds}");
+                Log.Info($"PDF生成完了. elapsedMs={sw.ElapsedMilliseconds}");
                 return pdfStream;
             }
             catch (Exception ex)
             {
-                // 例外は上位（Controller）で 500 として返す。
-                // ここでは追加処理はせず、必要ならログを有効化して原因調査する。
-                // SimpleFileLogger.Log(GetLogPath(), $"GeneratePdf ERROR. elapsedMs={sw.ElapsedMilliseconds}. {ex}");
+                Log.Error($"PDF生成失敗. elapsedMs={sw.ElapsedMilliseconds}", ex);
                 throw;
             }
             finally
@@ -98,22 +99,21 @@ namespace backend_print.Services
             return ConfigurationManager.AppSettings["GemBoxLogFilePath"];
         }
 
+        /// <summary>
+        /// Excelの埋め込み処理
+        /// </summary>
+        /// <param name="excelPath">Excelファイルパス</param>
+        /// <param name="data">データ</param>
+        /// <param name="pictures">画像</param>
         private void EmbedData(
             string excelPath,
             Dictionary<string, object> data,
             IDictionary<string, string> pictures)
         {
-            // --- Excelの埋め込み処理 ---
-            // 1) Excelロード
-            // 2) 明細（table）展開
-            // 3) 単票プレースホルダ置換（画像はセルへ貼り付け）
-            // 4) 保存
-
             // 1) Excelをロード（.xlsx）
             var workbook = ExcelFile.Load(excelPath);
 
-            // 今回はテンプレ1枚運用のため先頭シートを対象にする。
-            // シートが複数ある帳票に拡張する場合は Worksheets をループする。
+            // 1枚目のシートを使う
             var ws = workbook.Worksheets[0];
 
             // 2) 明細（テーブル）を展開する（同一シートに {{table:xxx}} を複数置ける。上から順に展開）。

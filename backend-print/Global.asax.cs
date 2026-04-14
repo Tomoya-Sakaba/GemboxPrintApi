@@ -6,6 +6,8 @@ using System.Web.Http;
 using System.Web.Mvc;
 using System.Web.Optimization;
 using System.Web.Routing;
+using log4net.Config;
+using System.IO;
 
 namespace backend_print
 {
@@ -13,6 +15,12 @@ namespace backend_print
     {
         protected void Application_Start()
         {
+            var log4netConfigPath = Server.MapPath("~/log4net.config");
+            if (File.Exists(log4netConfigPath))
+                XmlConfigurator.ConfigureAndWatch(new FileInfo(log4netConfigPath));
+            else
+                XmlConfigurator.Configure();
+
             AreaRegistration.RegisterAllAreas();
             GlobalConfiguration.Configure(WebApiConfig.Register);
             FilterConfig.RegisterGlobalFilters(GlobalFilters.Filters);

@@ -202,3 +202,7 @@ C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\obj\Debug
 C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\obj\Debug\backend-.152A5212.Up2Date
 C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\obj\Debug\backend-print.dll
 C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\obj\Debug\backend-print.pdb
+C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\log4net.dll
+C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\log4net.pdb
+C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\log4net.xml
+C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\log4net.config

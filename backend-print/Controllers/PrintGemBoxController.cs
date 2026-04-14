@@ -6,10 +6,10 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Threading.Tasks;
 using System.Web.Http;
 using backend_print.Models.DTOs;
 using backend_print.Services;
+using log4net;
 using Newtonsoft.Json.Linq;
 
 namespace backend_print.Controllers
@@ -21,52 +21,42 @@ namespace backend_print.Controllers
     [RoutePrefix("api/print/gembox")]
     public class PrintGemBoxController : ApiController
     {
+        private static readonly ILog Log = LogManager.GetLogger(typeof(PrintGemBoxController));
+
         private readonly GemBoxPdfGenerationService _pdfService;
         private readonly string _templateBasePath;
-        private readonly int _timeoutSeconds;
 
         public PrintGemBoxController()
         {
             _pdfService = new GemBoxPdfGenerationService();
             _templateBasePath = ConfigurationManager.AppSettings["BReportTemplateBasePath"]
                 ?? @"C:\app_data\b-templates";
-            _timeoutSeconds = int.TryParse(ConfigurationManager.AppSettings["GemBoxPdfTimeoutSeconds"], out var s)
-                ? s
-                : 60;
         }
 
         [HttpPost]
         [Route("pdf")]
-        public async Task<HttpResponseMessage> GeneratePdf([FromBody] GemBoxPrintRequestDto request)
+        public HttpResponseMessage GeneratePdf([FromBody] GemBoxPrintRequestDto request)
         {
             var correlationId = GetCorrelationId();
-            SimpleFileLogger.Log(
-                ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                $"[api] GeneratePdf start. correlationId={correlationId}");
+            Log.Info($"帳票作成開始. correlationId={correlationId}");
 
             if (request == null)
             {
-                SimpleFileLogger.Log(
-                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                    $"[api] GeneratePdf bad request (null body). correlationId={correlationId}");
+                Log.Warn($"帳票作成失敗（ボディが空）. correlationId={correlationId}");
                 return Request.CreateErrorResponse(HttpStatusCode.BadRequest, "リクエストボディが空です。");
             }
 
             if (string.IsNullOrWhiteSpace(request.TemplateFileName) ||
                 !IsSafeFileNameWithExtension(request.TemplateFileName.Trim(), ".xlsx"))
             {
-                SimpleFileLogger.Log(
-                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                    $"[api] GeneratePdf bad request (templateFileName). correlationId={correlationId}, templateFileName='{request.TemplateFileName}'");
+                Log.Warn($"帳票作成失敗（templateFileNameが不正）. correlationId={correlationId}, templateFileName='{request.TemplateFileName}'");
                 return Request.CreateErrorResponse(HttpStatusCode.BadRequest, "templateFileName が不正です（ファイル名のみ、.xlsx を指定）。");
             }
 
             var templatePath = Path.Combine(_templateBasePath, request.TemplateFileName);
             if (!File.Exists(templatePath))
             {
-                SimpleFileLogger.Log(
-                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                    $"[api] GeneratePdf not found (template). correlationId={correlationId}, templatePath='{templatePath}'");
+                Log.Warn($"帳票作成失敗（テンプレート未存在）. correlationId={correlationId}, templatePath='{templatePath}'");
                 return Request.CreateErrorResponse(HttpStatusCode.NotFound, "テンプレートファイルが見つかりません。");
             }
 
@@ -74,26 +64,22 @@ namespace backend_print.Controllers
             var picturesMap = BuildPicturesDictionary(request);
             if (merged.Count == 0 && picturesMap.Count == 0)
             {
-                SimpleFileLogger.Log(
-                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                    $"[api] GeneratePdf bad request (empty data/tables/pictures). correlationId={correlationId}");
+                Log.Warn($"帳票作成失敗（不正なリクエスト: data/tables/pictures が空）. correlationId={correlationId}");
                 return Request.CreateErrorResponse(
                     HttpStatusCode.BadRequest,
                     "印刷データが指定されていません。data / tables / pictures のいずれかに値を指定してください。");
             }
 
-            // GeneratePdf は CPU/IO が重くなり得るため、タイムアウト付きで別タスクとして実行する。
-            var work = Task.Run(() => _pdfService.GeneratePdf(templatePath, merged, picturesMap));
-            var finished = await Task.WhenAny(work, Task.Delay(TimeSpan.FromSeconds(_timeoutSeconds)));
-            if (finished != work)
+            Stream pdfStream;
+            try
             {
-                SimpleFileLogger.Log(
-                    ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                    $"[api] GeneratePdf timeout. correlationId={correlationId}, timeoutSeconds={_timeoutSeconds}");
-                return Request.CreateErrorResponse((HttpStatusCode)504, $"PDF生成がタイムアウトしました（{_timeoutSeconds}秒）。");
+                pdfStream = _pdfService.GeneratePdf(templatePath, merged, picturesMap);
             }
-
-            var pdfStream = await work;
+            catch (Exception ex)
+            {
+                Log.Error($"帳票作成失敗（例外）. correlationId={correlationId}", ex);
+                throw;
+            }
 
             // PDF をストリームで返却（バイト配列に全読み込みしない）。
             var response = new HttpResponseMessage(HttpStatusCode.OK)
@@ -115,9 +101,7 @@ namespace backend_print.Controllers
                 FileName = fileName
             };
 
-            SimpleFileLogger.Log(
-                ConfigurationManager.AppSettings["GemBoxLogFilePath"],
-                $"[api] GeneratePdf ok. correlationId={correlationId}, fileName='{fileName}', template='{request.TemplateFileName}'");
+            Log.Info($"帳票作成完了. correlationId={correlationId}, fileName='{fileName}', template='{request.TemplateFileName}'");
             return response;
         }
 
