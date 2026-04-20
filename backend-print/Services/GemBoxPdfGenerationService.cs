@@ -8,6 +8,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using GemBox.Spreadsheet;
 using log4net;
+using Newtonsoft.Json.Linq;
 
 namespace backend_print.Services
 {
@@ -168,6 +169,13 @@ namespace backend_print.Services
                             cell.Value = "";
                             continue;
                         }
+
+                        // セル全体が {{key}} の場合は、可能な限り「型のまま」セットして Excel の表示形式に任せる。
+                        if (data.TryGetValue(key0, out var rawScalar))
+                        {
+                            cell.Value = CoerceToCellValue(rawScalar);
+                            continue;
+                        }
                     }
 
                     // セル内の {{key}} を data[key] に置換する。
@@ -191,6 +199,8 @@ namespace backend_print.Services
             }
 
             // 4) 置換結果を同じパスに保存（印刷設定はテンプレのまま）
+            // 数式（SUMなど）の結果を、埋め込み後の値で更新してから保存する。
+            workbook.Calculate();
             workbook.Save(excelPath);
         }
 
@@ -447,6 +457,18 @@ namespace backend_print.Services
                 var s = cell.StringValue;
                 if (string.IsNullOrWhiteSpace(s)) continue;
 
+                // セル全体が {{tableKey.col}} の場合は、可能な限り「型のまま」セットして Excel の表示形式に任せる。
+                var m0 = regex.Match(s);
+                if (m0.Success && m0.Value == s.Trim())
+                {
+                    var key0 = m0.Groups[1].Value.Trim();
+                    if (rowData != null && rowData.TryGetValue(key0, out var rawCell))
+                        cell.Value = CoerceToCellValue(rawCell);
+                    else
+                        cell.Value = "";
+                    continue;
+                }
+
                 // {{history.col}} を rowData[col] に置換
                 var replaced = regex.Replace(s, m =>
                 {
@@ -488,6 +510,39 @@ namespace backend_print.Services
             return value.ToString();
         }
 
+        private object CoerceToCellValue(object value)
+        {
+            if (value == null) return "";
+
+            // JSON 由来の値（JToken）を素の .NET 型へ
+            if (value is JValue jv)
+                value = jv.Value;
+            else if (value is JToken jt)
+                value = jt.ToString();
+
+            // Excel の表示形式に任せたいので、数値や日時はできる限り型のまま返す。
+            // 先頭ゼロ等を保持したい場合は、送信側で文字列にする。
+            switch (value)
+            {
+                case DateTime _:
+                case bool _:
+                case byte _:
+                case sbyte _:
+                case short _:
+                case ushort _:
+                case int _:
+                case uint _:
+                case long _:
+                case ulong _:
+                case float _:
+                case double _:
+                case decimal _:
+                    return value;
+            }
+
+            return value.ToString();
+        }
+
         private void ConvertExcelToPdf(string excelPath, string pdfPath)
         {
             // GemBoxによる変換:
@@ -497,6 +552,8 @@ namespace backend_print.Services
             // 印刷オプションはテンプレに保存されたものをそのまま使う（コードで FitWorksheetWidthToPages 等を上書きしない）。
             // 以前は上書きしていたため、Excel の印刷プレビューでは２ページなのに PDF だけ１ページになる事象があった。
             var workbook = ExcelFile.Load(excelPath);
+            // PDF出力前に数式結果を更新する（テンプレのキャッシュ値を出さないため）。
+            workbook.Calculate();
             workbook.Save(pdfPath);
         }
 
