@@ -114,91 +114,87 @@ namespace backend_print.Services
             // 1) Excelをロード（.xlsx）
             var workbook = ExcelFile.Load(excelPath);
 
-            // 1枚目のシートを使う
-            var ws = workbook.Worksheets[0];
-
-            // 2) 明細（テーブル）を展開する（同一シートに {{table:xxx}} を複数置ける。上から順に展開）。
-            ExpandTableRegions(ws, data);
-
-            // 3) 単票プレースホルダ置換のための正規表現。
-            // 例: "機器コード: {{equipment_code}}" の {{equipment_code}} 部分を検出する。
+            // 全シートに対して同じ埋め込み処理を行う（1枚目に単票・2枚目に横置きの明細など、テンプレ側で分担可能）。
+            // 各シートの用紙方向・余白は Excel の「ページ設定」をテンプレに保存しておく（コードでは上書きしない）。
             var regex = new Regex(@"\{\{(.+?)\}\}");
-
-            // UsedRange（使用範囲）を取得。
-            // ws.Cells 全走査は膨大で遅い/ハングに見えることがあるため、必ず使用範囲だけ走査する。
-            var used = ws.GetUsedCellRange(true);
-            if (used == null)
+            for (int si = 0; si < workbook.Worksheets.Count; si++)
             {
-                // 置換対象が見つからなくても、編集結果（明細展開など）があるかもしれないので保存はする。
-                // 印刷設定はテンプレのまま（コードで上書きしない。Excel の印刷プレビューと GemBox PDF を一致させるため）。
-                workbook.Save(excelPath);
-                return;
-            }
+                var ws = workbook.Worksheets[si];
 
-            // 行・列を UsedRange の範囲で走査する。
-            for (int r = used.FirstRowIndex; r <= used.LastRowIndex; r++)
-            {
-                for (int c = used.FirstColumnIndex; c <= used.LastColumnIndex; c++)
+                // 2) 明細（テーブル）を展開する（同一シートに {{table:xxx}} を複数置ける。上から順に展開）。
+                ExpandTableRegions(ws, data);
+
+                // UsedRange（使用範囲）を取得。
+                // ws.Cells 全走査は膨大で遅い/ハングに見えることがあるため、必ず使用範囲だけ走査する。
+                var used = ws.GetUsedCellRange(true);
+                if (used == null)
+                    continue;
+
+                // 行・列を UsedRange の範囲で走査する。
+                for (int r = used.FirstRowIndex; r <= used.LastRowIndex; r++)
                 {
-                    // 対象セル
-                    var cell = ws.Cells[r, c];
-
-                    // 文字列セルのみ置換対象（数値/日付/数式などは触らない）
-                    if (cell.ValueType != CellValueType.String) continue;
-
-                    // セル文字列
-                    var s = cell.StringValue;
-
-                    // 空・空白のみは対象外
-                    if (string.IsNullOrWhiteSpace(s)) continue;
-
-                    // "{{" が無いセルは対象外（正規表現の無駄打ち回避）
-                    if (s.IndexOf("{{", StringComparison.Ordinal) < 0) continue;
-
-                    // 画像: セル全体が {{key}} の場合のみ対象にする（文章中へ画像を埋める用途は想定しない）
-                    // 例: 結合セルの枠内に {{picture1}} を置き、data["picture1"]="test1.png" を渡す。
-                    var m0 = regex.Match(s);
-                    if (m0.Success && m0.Value == s.Trim())
+                    for (int c = used.FirstColumnIndex; c <= used.LastColumnIndex; c++)
                     {
-                        var key0 = m0.Groups[1].Value.Trim();
-                        if (pictures != null &&
-                            pictures.TryGetValue(key0, out var imgRef) &&
-                            !string.IsNullOrWhiteSpace(imgRef) &&
-                            TryEmbedPicture(ws, cell, imgRef.Trim().Trim('"')))
+                        // 対象セル
+                        var cell = ws.Cells[r, c];
+
+                        // 文字列セルのみ置換対象（数値/日付/数式などは触らない）
+                        if (cell.ValueType != CellValueType.String) continue;
+
+                        // セル文字列
+                        var s = cell.StringValue;
+
+                        // 空・空白のみは対象外
+                        if (string.IsNullOrWhiteSpace(s)) continue;
+
+                        // "{{" が無いセルは対象外（正規表現の無駄打ち回避）
+                        if (s.IndexOf("{{", StringComparison.Ordinal) < 0) continue;
+
+                        // 画像: セル全体が {{key}} の場合のみ対象にする（文章中へ画像を埋める用途は想定しない）
+                        // 例: 結合セルの枠内に {{picture1}} を置き、data["picture1"]="test1.png" を渡す。
+                        var m0 = regex.Match(s);
+                        if (m0.Success && m0.Value == s.Trim())
                         {
-                            cell.Value = "";
-                            continue;
+                            var key0 = m0.Groups[1].Value.Trim();
+                            if (pictures != null &&
+                                pictures.TryGetValue(key0, out var imgRef) &&
+                                !string.IsNullOrWhiteSpace(imgRef) &&
+                                TryEmbedPicture(ws, cell, imgRef.Trim().Trim('"')))
+                            {
+                                cell.Value = "";
+                                continue;
+                            }
+
+                            // セル全体が {{key}} の場合は、可能な限り「型のまま」セットして Excel の表示形式に任せる。
+                            if (data.TryGetValue(key0, out var rawScalar))
+                            {
+                                cell.Value = CoerceToCellValue(rawScalar);
+                                continue;
+                            }
                         }
 
-                        // セル全体が {{key}} の場合は、可能な限り「型のまま」セットして Excel の表示形式に任せる。
-                        if (data.TryGetValue(key0, out var rawScalar))
+                        // セル内の {{key}} を data[key] に置換する。
+                        // 見つからないキーは空文字にする（テンプレ側の書き間違いでも処理は継続）
+                        var replaced = regex.Replace(s, m =>
                         {
-                            cell.Value = CoerceToCellValue(rawScalar);
-                            continue;
-                        }
+                            // {{ ... }} の中身（前後空白は除去）
+                            var key = m.Groups[1].Value.Trim();
+
+                            // data にキーがあれば文字列化して返す
+                            if (data.TryGetValue(key, out var v))
+                                return FormatValue(v);
+
+                            // 無い場合は空文字（置換）
+                            return "";
+                        });
+
+                        // 変化があったときだけ書き戻す（無駄な変更を減らす）
+                        if (replaced != s) cell.Value = replaced;
                     }
-
-                    // セル内の {{key}} を data[key] に置換する。
-                    // 見つからないキーは空文字にする（テンプレ側の書き間違いでも処理は継続）
-                    var replaced = regex.Replace(s, m =>
-                    {
-                        // {{ ... }} の中身（前後空白は除去）
-                        var key = m.Groups[1].Value.Trim();
-
-                        // data にキーがあれば文字列化して返す
-                        if (data.TryGetValue(key, out var v))
-                            return FormatValue(v);
-
-                        // 無い場合は空文字（置換）
-                        return "";
-                    });
-
-                    // 変化があったときだけ書き戻す（無駄な変更を減らす）
-                    if (replaced != s) cell.Value = replaced;
                 }
             }
 
-            // 4) 置換結果を同じパスに保存（印刷設定はテンプレのまま）
+            // 3) 置換結果を同じパスに保存（印刷設定はテンプレのまま）
             // 数式（SUMなど）の結果を、埋め込み後の値で更新してから保存する。
             workbook.Calculate();
             workbook.Save(excelPath);
@@ -547,14 +543,20 @@ namespace backend_print.Services
         {
             // GemBoxによる変換:
             // - ExcelFile.Load でxlsxを読み
-            // - Save(pdfPath) でPDFとして書き出す
+            // - Save(pdfPath, PdfSaveOptions) でPDFとして書き出す
             //
-            // 印刷オプションはテンプレに保存されたものをそのまま使う（コードで FitWorksheetWidthToPages 等を上書きしない）。
-            // 以前は上書きしていたため、Excel の印刷プレビューでは２ページなのに PDF だけ１ページになる事象があった。
+            // 印刷オプション（向き・余白・改ページ）はテンプレの各シートのページ設定をそのまま使う。
+            //
+            // 重要: PdfSaveOptions.SelectionType の既定は ActiveSheet のため、
+            // 「アクティブなシートだけ」が PDF に出る。複数シート（縦の1枚目＋横の2枚目など）を1本のPDFにまとめるには EntireFile が必要。
             var workbook = ExcelFile.Load(excelPath);
             // PDF出力前に数式結果を更新する（テンプレのキャッシュ値を出さないため）。
             workbook.Calculate();
-            workbook.Save(pdfPath);
+            var pdfOptions = new PdfSaveOptions
+            {
+                SelectionType = SelectionType.EntireFile
+            };
+            workbook.Save(pdfPath, pdfOptions);
         }
 
         private void Cleanup(string path)
