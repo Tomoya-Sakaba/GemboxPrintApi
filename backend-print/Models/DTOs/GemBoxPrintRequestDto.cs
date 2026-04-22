@@ -19,8 +19,5 @@ namespace backend_print.Models.DTOs
 
         [JsonProperty("pictures")]
         public Dictionary<string, string> Pictures { get; set; }
-
-        [JsonProperty("downloadFileName")]
-        public string DownloadFileName { get; set; }
     }
 }

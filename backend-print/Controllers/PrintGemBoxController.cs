@@ -89,19 +89,8 @@ namespace backend_print.Controllers
 
             response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
 
-            // Download name: use file name only (strip path).
-            var fileName = Path.GetFileName((request.DownloadFileName ?? "").Trim().Trim('"'));
-            if (string.IsNullOrWhiteSpace(fileName) || !IsSafeFileNameWithExtension(fileName, ".pdf"))
-                return Request.CreateErrorResponse(
-                    HttpStatusCode.BadRequest,
-                    "downloadFileName が未指定または不正です。ファイル名のみ（例: example.pdf）を指定してください。");
-
-            response.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment")
-            {
-                FileName = fileName
-            };
-
-            Log.Info($"帳票作成完了. correlationId={correlationId}, fileName='{fileName}', template='{request.TemplateFileName}'");
+            // ファイル名はクライアント（フロント）側で決める運用のため、Content-Disposition / filename は付けない。
+            Log.Info($"帳票作成完了. correlationId={correlationId}, template='{request.TemplateFileName}'");
             return response;
         }
 
