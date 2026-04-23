@@ -252,6 +252,15 @@ namespace backend_print.Services
             if (boxW <= 0 || boxH <= 0)
                 return true;
 
+            // 罫線へのかぶり回避: 枠の内側に 1px 相当の余白を作る
+            const double insetPx = 1.0;
+            var insetLeft = boxLeft + insetPx;
+            var insetTop = boxTop + insetPx;
+            var insetW = Math.Max(0, boxW - (insetPx * 2.0));
+            var insetH = Math.Max(0, boxH - (insetPx * 2.0));
+            if (insetW <= 0 || insetH <= 0)
+                return true;
+
             int pixW;
             int pixH;
             try
@@ -272,26 +281,26 @@ namespace backend_print.Services
                 return true;
 
             var imgAspect = (double)pixW / pixH;
-            var boxAspect = boxW / boxH;
+            var boxAspect = insetW / insetH;
             double fittedW;
             double fittedH;
             if (imgAspect > boxAspect)
             {
-                fittedW = boxW;
-                fittedH = boxW / imgAspect;
+                fittedW = insetW;
+                fittedH = insetW / imgAspect;
             }
             else
             {
-                fittedH = boxH;
-                fittedW = boxH * imgAspect;
+                fittedH = insetH;
+                fittedW = insetH * imgAspect;
             }
 
-            var padX = Math.Max(0, (boxW - fittedW) / 2.0);
-            var padY = Math.Max(0, (boxH - fittedH) / 2.0);
+            var padX = Math.Max(0, (insetW - fittedW) / 2.0);
+            var padY = Math.Max(0, (insetH - fittedH) / 2.0);
 
             picture.Position.Mode = PositioningMode.FreeFloating;
-            picture.Position.Left = boxLeft + padX;
-            picture.Position.Top = boxTop + padY;
+            picture.Position.Left = insetLeft + padX;
+            picture.Position.Top = insetTop + padY;
             picture.Position.Width = fittedW;
             picture.Position.Height = fittedH;
             return true;
