@@ -173,6 +173,7 @@
     </Compile>
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Services\GemBoxPdfGenerationService.cs" />
+    <Compile Include="Services\DbKeyValueConfig.cs" />
     <Compile Include="Services\SimpleFileLogger.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -245,7 +246,7 @@
     <Content Include="Views\Shared\_Layout.cshtml" />
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="App_Data\" />
+    <Folder Include="App_Data\b-templates\" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Scripts\bootstrap.min.js.map" />

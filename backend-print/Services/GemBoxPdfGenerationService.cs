@@ -206,7 +206,7 @@ namespace backend_print.Services
             if (string.IsNullOrWhiteSpace(imageReference)) return false;
 
             // 画像ファイル参照は「絶対パス」または「GemBoxPictureBasePath + ファイル名」を許可する。
-            var basePath = (ConfigurationManager.AppSettings["GemBoxPictureBasePath"] ?? @"C:\app_data\picuture").Trim();
+            var basePath = DbKeyValueConfig.GetRequiredString("GemBoxPictureBasePath");
             var path = imageReference.Trim().Trim('"');
             if (!Path.IsPathRooted(path))
                 path = Path.Combine(basePath, path);

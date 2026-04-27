@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Web.Hosting;
 using System.Web.Http;
 using backend_print.Models.DTOs;
 using backend_print.Services;
@@ -29,8 +30,24 @@ namespace backend_print.Controllers
         public PrintGemBoxController()
         {
             _pdfService = new GemBoxPdfGenerationService();
-            _templateBasePath = ConfigurationManager.AppSettings["BReportTemplateBasePath"]
-                ?? @"C:\app_data\b-templates";
+            var configured = DbKeyValueConfig.GetRequiredString("BReportTemplateBasePath");
+            _templateBasePath = ResolveTemplateBasePath(configured);
+        }
+
+        private static string ResolveTemplateBasePath(string configured)
+        {
+            // 1) 未設定なら既定（従来互換）
+            if (string.IsNullOrWhiteSpace(configured))
+                return @"C:\app_data\b-templates";
+
+            // 2) 物理パスならそのまま- それ以外（仮想パス/相対パス）は HostingEnvironment.MapPath で物理化
+            var baseDir = Path.IsPathRooted(configured)
+                ? configured
+                : (HostingEnvironment.MapPath(configured) ?? "");
+
+            // パスの末尾の区切り文字(/)を削除
+            baseDir = baseDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return baseDir;
         }
 
         [HttpPost]

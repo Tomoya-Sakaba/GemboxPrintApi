@@ -95,3 +95,14 @@ Excelセルに `{{key}}` を置きます。
 - **`GemBoxPictureBasePath`**
   - pictures の値が相対（例: `test1.png`）のときのベースフォルダ
 
+## 設定のDB管理（m_key）
+
+パス等を DB で管理する運用の場合、`dbo.m_key`（`k`/`v`）に設定値を入れておくと
+backend-print は **DBからのみ取得**します（m_key に無い場合はエラー）。
+
+- 例（DB側）:
+  - `k = 'BReportTemplateBasePath'` → `v = '~/App_Data/b-templates'`
+  - `k = 'GemBoxPictureBasePath'` → `v = 'C:\app_data\picuture'`
+
+※ DBから読むために、backend-print の `Web.config` に `connectionStrings` の `MyDbConnection` を設定してください。
+
