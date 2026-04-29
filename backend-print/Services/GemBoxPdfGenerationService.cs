@@ -94,12 +94,6 @@ namespace backend_print.Services
             }
         }
 
-        private string GetLogPath()
-        {
-            // ログファイルパス（Web.config）
-            return ConfigurationManager.AppSettings["GemBoxLogFilePath"];
-        }
-
         /// <summary>
         /// Excelの埋め込み処理
         /// </summary>
@@ -117,6 +111,7 @@ namespace backend_print.Services
             // 全シートに対して同じ埋め込み処理を行う（1枚目に単票・2枚目に横置きの明細など、テンプレ側で分担可能）。
             // 各シートの用紙方向・余白は Excel の「ページ設定」をテンプレに保存しておく（コードでは上書きしない）。
             var regex = new Regex(@"\{\{(.+?)\}\}");
+            var fullCellPlaceholderRegex = new Regex(@"^\{\{(.+?)\}\}$");
             for (int si = 0; si < workbook.Worksheets.Count; si++)
             {
                 var ws = workbook.Worksheets[si];
@@ -142,54 +137,45 @@ namespace backend_print.Services
                         if (cell.ValueType != CellValueType.String) continue;
 
                         // セル文字列
-                        var s = cell.StringValue;
+                        var cellValue = cell.StringValue.Trim();
 
                         // 空・空白のみは対象外
-                        if (string.IsNullOrWhiteSpace(s)) continue;
+                        if (string.IsNullOrWhiteSpace(cellValue)) continue;
 
                         // "{{" が無いセルは対象外（正規表現の無駄打ち回避）
-                        if (s.IndexOf("{{", StringComparison.Ordinal) < 0) continue;
+                        if (cellValue.IndexOf("{{", StringComparison.Ordinal) < 0) continue;
 
-                        // 画像: セル全体が {{key}} の場合のみ対象にする（文章中へ画像を埋める用途は想定しない）
-                        // 例: 結合セルの枠内に {{picture1}} を置き、data["picture1"]="test1.png" を渡す。
-                        var m0 = regex.Match(s);
-                        if (m0.Success && m0.Value == s.Trim())
+                        // {{key}} は「セル全体」でのみ許可する
+                        // 文章中の {{key}} は対象外（何もしない）
+                        var matchValue = fullCellPlaceholderRegex.Match(cellValue);
+                        if (!matchValue.Success)
                         {
-                            var key0 = m0.Groups[1].Value.Trim();
-                            if (pictures != null &&
-                                pictures.TryGetValue(key0, out var imgRef) &&
-                                !string.IsNullOrWhiteSpace(imgRef) &&
-                                TryEmbedPicture(ws, cell, imgRef.Trim().Trim('"')))
-                            {
-                                cell.Value = "";
-                                continue;
-                            }
-
-                            // セル全体が {{key}} の場合は、可能な限り「型のまま」セットして Excel の表示形式に任せる。
-                            if (data.TryGetValue(key0, out var rawScalar))
-                            {
-                                cell.Value = CoerceToCellValue(rawScalar);
-                                continue;
-                            }
+                            continue;
                         }
 
-                        // セル内の {{key}} を data[key] に置換する。
-                        // 見つからないキーは空文字にする（テンプレ側の書き間違いでも処理は継続）
-                        var replaced = regex.Replace(s, m =>
+                        var key0 = matchValue.Groups[1].Value.Trim();
+
+                        // 画像: pictures[key] があればセル内文字を消して画像を埋め込む
+                        if (pictures != null &&
+                            pictures.TryGetValue(key0, out var imgRef) &&
+                            !string.IsNullOrWhiteSpace(imgRef) &&
+                            TryEmbedPicture(ws, cell, imgRef.Trim().Trim('"')))
                         {
-                            // {{ ... }} の中身（前後空白は除去）
-                            var key = m.Groups[1].Value.Trim();
+                            cell.Value = "";
+                            continue;
+                        }
 
-                            // data にキーがあれば文字列化して返す
-                            if (data.TryGetValue(key, out var v))
-                                return FormatValue(v);
+                        // 単票: data[key] があれば、「型のまま」セットして Excel の表示形式に任せる
+                        if (data.TryGetValue(key0, out var rawScalar))
+                        {
+                            cell.Value = CoerceToCellValue(rawScalar);
+                            continue;
+                        }
 
-                            // 無い場合は空文字（置換）
-                            return "";
-                        });
+                        // data/pictures に存在しない場合は空にする（テンプレのキー間違い等）
+                        cell.Value = "";
+                        continue;
 
-                        // 変化があったときだけ書き戻す（無駄な変更を減らす）
-                        if (replaced != s) cell.Value = replaced;
                     }
                 }
             }
@@ -273,7 +259,8 @@ namespace backend_print.Services
             }
             catch
             {
-                // If pixel size unknown (e.g. some formats), keep default stretch.
+                // ピクセルサイズ不明（一部フォーマット）の場合は、デフォルトのストレッチを使用する。
+                // ストレッチは、画像のアスペクト比をセルに収めて余白で中央寄せする。
                 return true;
             }
 

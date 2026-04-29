@@ -175,6 +175,8 @@
     <Compile Include="Services\GemBoxPdfGenerationService.cs" />
     <Compile Include="Services\DbKeyValueConfig.cs" />
     <Compile Include="Services\SimpleFileLogger.cs" />
+    <Compile Include="Utils\PathResolveUtils.cs" />
+    <Compile Include="Utils\PrintGemBoxRequestUtils.cs" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Areas\HelpPage\HelpPage.css" />
