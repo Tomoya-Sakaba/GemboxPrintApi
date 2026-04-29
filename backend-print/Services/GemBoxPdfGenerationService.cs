@@ -191,11 +191,10 @@ namespace backend_print.Services
             if (ws == null || cell == null) return false;
             if (string.IsNullOrWhiteSpace(imageReference)) return false;
 
-            // 画像ファイル参照は「絶対パス」または「GemBoxPictureBasePath + ファイル名」を許可する。
-            var basePath = DbKeyValueConfig.GetRequiredString("GemBoxPictureBasePath");
+            // 画像ファイル参照はリクエストで「絶対パス」を渡す運用とする。
             var path = imageReference.Trim().Trim('"');
             if (!Path.IsPathRooted(path))
-                path = Path.Combine(basePath, path);
+                return false;
 
             // 拡張子が画像っぽいもののみ対象
             var ext = (Path.GetExtension(path) ?? "").ToLowerInvariant();

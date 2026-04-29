@@ -59,8 +59,7 @@ Excelセルに `{{key}}` を置きます。
 画像は **セル全体が `{{key}}` のときだけ**埋め込み対象になります（文章中の一部に画像を混ぜる用途は想定しません）。
 
 - `pictures["pic_1_1"] = "C:\\app_data\\picuture\\test1.png"` のように **絶対パス**を渡せます
-- `pictures["pic_1_1"] = "test1.png"` のように **ファイル名のみ**を渡すこともできます  
-  - この場合は `Web.config` の `GemBoxPictureBasePath` と結合して探します
+- `pictures["pic_1_1"] = "test1.png"` のような **相対パス / ファイル名のみ**は埋め込み対象になりません（絶対パス運用）
 
 対応拡張子: `.png .jpg .jpeg .gif .bmp .tif .tiff .svg .emf .wmf`
 
@@ -92,8 +91,7 @@ Excelセルに `{{key}}` を置きます。
   - テンプレ `.xlsx` を置くフォルダ
 - **`GemBoxSpreadsheetLicenseKey`**
   - 空だと無料版（制限あり）
-- **`GemBoxPictureBasePath`**
-  - pictures の値が相対（例: `test1.png`）のときのベースフォルダ
+  - （画像パスはリクエストで絶対パスを渡す運用のため、画像用のベースパス設定は不要）
 
 ## 設定のDB管理（m_key）
 
@@ -102,7 +100,7 @@ backend-print は **DBからのみ取得**します（m_key に無い場合は�
 
 - 例（DB側）:
   - `k = 'BReportTemplateBasePath'` → `v = '~/App_Data/b-templates'`
-  - `k = 'GemBoxPictureBasePath'` → `v = 'C:\app_data\picuture'`
+  - （画像パスはリクエストで絶対パスを渡す運用のため、`GemBoxPictureBasePath` は不要）
 
 ※ DBから読むために、backend-print の `Web.config` に `connectionStrings` の `MyDbConnection` を設定してください。
 
