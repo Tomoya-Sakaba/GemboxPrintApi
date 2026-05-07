@@ -238,7 +238,7 @@ namespace backend_print.Services
                 return true;
 
             // 罫線へのかぶり回避: 枠の内側に 1px 相当の余白を作る
-            const double insetPx = 1.0;
+            const double insetPx = 3.0;
             var insetLeft = boxLeft + insetPx;
             var insetTop = boxTop + insetPx;
             var insetW = Math.Max(0, boxW - (insetPx * 2.0));
@@ -457,6 +457,10 @@ namespace backend_print.Services
                         cell.Value = CoerceToCellValue(rawCell);
                     else
                         cell.Value = "";
+
+                    // 予算/実績の「見た目」は列ではなく背景色で表現したい場合向け:
+                    // 月セル（m01..m12）は rowData["m04_type"] 等で色を決める（actual=赤, budget=青）。
+                    ApplyBudgetActualBackgroundIfNeeded(cell, key0, rowData);
                     continue;
                 }
 
@@ -471,6 +475,38 @@ namespace backend_print.Services
                 });
 
                 if (replaced != s) cell.Value = replaced;
+            }
+        }
+
+        private static void ApplyBudgetActualBackgroundIfNeeded(ExcelCell cell, string key, Dictionary<string, object> rowData)
+        {
+            if (cell == null) return;
+            if (string.IsNullOrWhiteSpace(key)) return;
+
+            var k = key.Trim().ToLowerInvariant();
+            // 月セル（m01..m12）だけを対象にする
+            if (!Regex.IsMatch(k, @"^m(0[1-9]|1[0-2])$"))
+                return;
+
+            // 値が空なら色も付けない（空の色付きセルが並ぶのを避ける）
+            var hasValue = cell.Value != null && cell.ValueType != CellValueType.Null && !(cell.Value is string ss && string.IsNullOrWhiteSpace(ss));
+            if (!hasValue) return;
+
+            var cellType = "";
+            if (rowData != null && rowData.TryGetValue($"{k}_type", out var rt) && rt != null)
+                cellType = rt.ToString().Trim().ToLowerInvariant();
+
+            if (cellType == "budget")
+            {
+                // 予算: 青
+                cell.Style.FillPattern.SetSolid(SpreadsheetColor.FromArgb(91, 155, 213)); // Excelっぽい青
+                return;
+            }
+            if (cellType == "actual")
+            {
+                // 実績: 赤
+                cell.Style.FillPattern.SetSolid(SpreadsheetColor.FromArgb(255, 80, 80)); // 見やすい赤
+                return;
             }
         }
 
