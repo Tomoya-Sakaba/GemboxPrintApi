@@ -206,3 +206,6 @@ C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\log4n
 C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\log4net.pdb
 C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\log4net.xml
 C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\log4net.config
+C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\PdfSharp.dll
+C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\PdfSharp.xml
+C:\Users\kotem\OneDrive\Documents\cs-work\GemboxPrintApi\backend-print\bin\de\PdfSharp.resources.dll
