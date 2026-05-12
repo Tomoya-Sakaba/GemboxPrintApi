@@ -40,11 +40,40 @@ namespace backend_print.Services
             Dictionary<string, object> data,
             IDictionary<string, string> pictures)
         {
-            // ここは「テンプレのコピー → 埋め込み → PDF変換 → MemoryStreamで返す」までを担当する。
-            // API側（Controller）はこのStreamをそのままHTTPレスポンスに載せる。
-            var bytes = GeneratePdfBytes(templatePath, data, pictures, entireWorkbook: true, worksheetIndex: null);
-            var pdfStream = new MemoryStream(bytes) { Position = 0 };
-            return pdfStream;
+            // テンプレのコピー → 埋め込み → ブック全体を PDF 化 → MemoryStream で返す。
+            string tempExcelPath = null;
+            string tempPdfPath = null;
+            var sw = Stopwatch.StartNew();
+
+            try
+            {
+                tempExcelPath = Path.Combine(_tempPath, $"gembox_{Guid.NewGuid()}.xlsx");
+                Log.Info($"PDF生成開始. templatePath='{templatePath}', tempExcel='{tempExcelPath}'");
+                File.Copy(templatePath, tempExcelPath, true);
+
+                Log.Debug($"Excel埋め込み開始. elapsedMs={sw.ElapsedMilliseconds}");
+                EmbedData(tempExcelPath, data, pictures);
+                Log.Debug($"Excel埋め込み完了. elapsedMs={sw.ElapsedMilliseconds}");
+
+                tempPdfPath = Path.Combine(_tempPath, $"gembox_{Guid.NewGuid()}.pdf");
+                Log.Debug($"PDF変換開始. tempPdf='{tempPdfPath}', elapsedMs={sw.ElapsedMilliseconds}");
+                ConvertExcelToPdfEntireFile(tempExcelPath, tempPdfPath);
+                Log.Debug($"PDF変換完了. pdfBytes={new FileInfo(tempPdfPath).Length}, elapsedMs={sw.ElapsedMilliseconds}");
+
+                var bytes = File.ReadAllBytes(tempPdfPath);
+                Log.Info($"PDF生成完了. elapsedMs={sw.ElapsedMilliseconds}");
+                return new MemoryStream(bytes) { Position = 0 };
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"PDF生成失敗. elapsedMs={sw.ElapsedMilliseconds}", ex);
+                throw;
+            }
+            finally
+            {
+                Cleanup(tempExcelPath);
+                Cleanup(tempPdfPath);
+            }
         }
 
         /// <summary>
@@ -75,107 +104,6 @@ namespace backend_print.Services
             finally
             {
                 Cleanup(tempExcelPath);
-            }
-        }
-
-        /// <summary>
-        /// 1ワークブック内の指定シートだけをPDF化（他シートは出さない）。
-        /// </summary>
-        public Stream GeneratePdfForWorksheetIndex(
-            string templatePath,
-            Dictionary<string, object> data,
-            IDictionary<string, string> pictures,
-            int worksheetIndex)
-        {
-            var bytes = GeneratePdfBytes(templatePath, data, pictures, entireWorkbook: false, worksheetIndex: worksheetIndex);
-            return new MemoryStream(bytes) { Position = 0 };
-        }
-
-        /// <summary>
-        /// 1つのブックから2シートだけを順にPDF化し、中間PDFを挟んで結合する。
-        /// </summary>
-        public Stream GenerateSandwichPdfOneWorkbookTwoSheets(
-            string templatePath,
-            int firstSheetIndex,
-            int secondSheetIndex,
-            string middlePdfPath,
-            Dictionary<string, object> data,
-            IDictionary<string, string> pictures)
-        {
-            // 前半シートをPDF化
-            var first = GeneratePdfBytes(templatePath, data, pictures, entireWorkbook: false, worksheetIndex: firstSheetIndex);
-            // 中間PDFを読み込み
-            var middle = File.ReadAllBytes(middlePdfPath);
-            // 後半シートをPDF化
-            var second = GeneratePdfBytes(templatePath, data, pictures, entireWorkbook: false, worksheetIndex: secondSheetIndex);
-            // 3つのPDFを結合
-            var mergePdf = PdfMergeService.MergePdfs(new[] { first, middle, second });
-            return new MemoryStream(mergePdf) { Position = 0 };
-        }
-
-        /// <summary>テンプレをコピーして埋め込み、PDFバイト列を返す。</summary>
-        private byte[] GeneratePdfBytes(
-            string templatePath,
-            Dictionary<string, object> data,
-            IDictionary<string, string> pictures,
-            bool entireWorkbook,
-            int? worksheetIndex)
-        {
-            // ここは「テンプレのコピー → 埋め込み → PDF変換 → バイト配列で返す」までを担当する。
-            // API側（Controller）はこの結果をそのままHTTPレスポンスに載せる。
-
-            string tempExcelPath = null;
-            string tempPdfPath = null;
-
-            // 速度計測（ログ用）
-            var sw = Stopwatch.StartNew();
-
-            try
-            {
-                // --- 1) テンプレExcelを作業用にコピー ---
-                // 元テンプレを直接編集すると、同時実行時に競合する / テンプレが壊れる可能性があるため、
-                // 必ず一時ファイルにコピーしてから編集する。
-                tempExcelPath = Path.Combine(_tempPath, $"gembox_{Guid.NewGuid()}.xlsx");
-                Log.Info($"PDF生成開始. templatePath='{templatePath}', tempExcel='{tempExcelPath}', entireWorkbook={entireWorkbook}, sheet={worksheetIndex}");
-                File.Copy(templatePath, tempExcelPath, true);
-
-                // --- 2) プレースホルダ置換（Excel編集） ---
-                // tempExcelPath の中の {{...}} を data / pictures で置換する。
-                Log.Debug($"Excel埋め込み開始. elapsedMs={sw.ElapsedMilliseconds}");
-                EmbedData(tempExcelPath, data, pictures);
-                Log.Debug($"Excel埋め込み完了. elapsedMs={sw.ElapsedMilliseconds}");
-
-                // --- 3) Excel → PDF 変換 ---
-                // GemBoxは Save(pdfPath) でPDF出力できる。
-                tempPdfPath = Path.Combine(_tempPath, $"gembox_{Guid.NewGuid()}.pdf");
-                Log.Debug($"PDF変換開始. tempPdf='{tempPdfPath}', elapsedMs={sw.ElapsedMilliseconds}");
-                if (entireWorkbook)
-                    ConvertExcelToPdfEntireFile(tempExcelPath, tempPdfPath);
-                else
-                {
-                    if (!worksheetIndex.HasValue)
-                        throw new ArgumentException("worksheetIndex is required when entireWorkbook is false.", nameof(worksheetIndex));
-                    ConvertExcelToPdfActiveSheet(tempExcelPath, tempPdfPath, worksheetIndex.Value);
-                }
-
-                Log.Debug($"PDF変換完了. pdfBytes={new FileInfo(tempPdfPath).Length}, elapsedMs={sw.ElapsedMilliseconds}");
-
-                // --- 4) PDFをメモリへ読み込み、byte[]で返す ---
-                var bytes = File.ReadAllBytes(tempPdfPath);
-                Log.Info($"PDF生成完了. elapsedMs={sw.ElapsedMilliseconds}");
-                return bytes;
-            }
-            catch (Exception ex)
-            {
-                Log.Error($"PDF生成失敗. elapsedMs={sw.ElapsedMilliseconds}", ex);
-                throw;
-            }
-            finally
-            {
-                // --- 5) 作業ファイルの後始末 ---
-                // 例外が出ても temp ファイルが溜まらないよう、必ず削除を試みる。
-                Cleanup(tempExcelPath);
-                Cleanup(tempPdfPath);
             }
         }
 
@@ -663,21 +591,6 @@ namespace backend_print.Services
             var pdfOptions = new PdfSaveOptions
             {
                 SelectionType = SelectionType.EntireFile
-            };
-            workbook.Save(pdfPath, pdfOptions);
-        }
-
-        /// <summary>アクティブシートのみPDF化（1ブックから特定シートだけ出す用途）。</summary>
-        private void ConvertExcelToPdfActiveSheet(string excelPath, string pdfPath, int worksheetIndex)
-        {
-            var workbook = ExcelFile.Load(excelPath);
-            workbook.Calculate();
-            if (worksheetIndex < 0 || worksheetIndex >= workbook.Worksheets.Count)
-                throw new ArgumentOutOfRangeException(nameof(worksheetIndex), "worksheetIndex is out of range for this workbook.");
-            workbook.Worksheets.ActiveWorksheet = workbook.Worksheets[worksheetIndex];
-            var pdfOptions = new PdfSaveOptions
-            {
-                SelectionType = SelectionType.ActiveSheet
             };
             workbook.Save(pdfPath, pdfOptions);
         }
