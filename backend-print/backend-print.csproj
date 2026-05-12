@@ -170,7 +170,6 @@
     <Compile Include="Controllers\EchoController.cs" />
     <Compile Include="Controllers\ValuesController.cs" />
     <Compile Include="Controllers\PrintGemBoxController.cs" />
-    <Compile Include="Controllers\PrintGemBoxExcelController.cs" />
     <Compile Include="Models\DTOs\GemBoxPrintRequestDto.cs" />
     <Compile Include="Global.asax.cs">
       <DependentUpon>Global.asax</DependentUpon>

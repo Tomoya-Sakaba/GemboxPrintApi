@@ -1,8 +1,5 @@
 using System;
-using System.Collections.Generic;
-using System.Configuration;
 using System.IO;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -15,8 +12,9 @@ using log4net;
 namespace backend_print.Controllers
 {
     /// <summary>
-    /// GemBox: テンプレExcelへデータを埋め込みPDF化するのみ（DBアクセスなし）。
-    /// POST /api/print/gembox/pdf
+    /// GemBox: テンプレExcelへデータを埋め込み、PDF または埋め込み済み <c>.xlsx</c> を返す（DBアクセスなし）。
+    /// POST /api/print/gembox/pdf … PDF（任意で <c>addPdfPath</c> のPDFを末尾に結合）
+    /// POST /api/print/gembox/excel … Excel
     /// </summary>
     [RoutePrefix("api/print/gembox")]
     public class PrintGemBoxController : ApiController
@@ -38,59 +36,98 @@ namespace backend_print.Controllers
         public HttpResponseMessage GeneratePdf([FromBody] GemBoxPrintRequestDto request)
         {
             var correlationId = PrintGemBoxRequestUtils.GetCorrelationId(Request);
-            Log.Info($"帳票作成開始. correlationId={correlationId}");
+            Log.Info($"帳票PDF開始. correlationId={correlationId}");
 
-            if (request == null)
+            var prep = PrintGemBoxRequestUtils.TryPrepareGemBoxPrint(request, _templateBasePath);
+            if (!prep.Ok)
             {
-                Log.Warn($"帳票作成失敗（ボディが空）. correlationId={correlationId}");
-                return Request.CreateErrorResponse(HttpStatusCode.BadRequest, "リクエストボディが空です。");
+                Log.Warn($"帳票PDF {prep.FailureLogDetail}. correlationId={correlationId}");
+                return Request.CreateErrorResponse(prep.ErrorStatus, prep.ErrorMessage);
             }
 
-            if (string.IsNullOrWhiteSpace(request.TemplateFileName) ||
-                !PrintGemBoxRequestUtils.IsSafeFileNameWithExtension(request.TemplateFileName.Trim(), ".xlsx"))
-            {
-                Log.Warn($"帳票作成失敗（templateFileNameが不正）. correlationId={correlationId}, templateFileName='{request.TemplateFileName}'");
-                return Request.CreateErrorResponse(HttpStatusCode.BadRequest, "templateFileName が不正です（ファイル名のみ、.xlsx を指定）。");
-            }
+            var ctx = prep.Prepared;
 
-            var templatePath = Path.Combine(_templateBasePath, request.TemplateFileName);
-            if (!File.Exists(templatePath))
+            if (!PrintGemBoxRequestUtils.TryValidateAddPdfPathForAppend(
+                    request.AddPdfPath,
+                    out var appendPath,
+                    out var addErrStatus,
+                    out var addErrMessage,
+                    out var addLogDetail))
             {
-                Log.Warn($"帳票作成失敗（テンプレート未存在）. correlationId={correlationId}, templatePath='{templatePath}'");
-                return Request.CreateErrorResponse(HttpStatusCode.NotFound, "テンプレートファイルが見つかりません。");
-            }
-
-            var merged = PrintGemBoxRequestUtils.MergeToGemBoxData(request);
-            var picturesMap = PrintGemBoxRequestUtils.BuildPicturesDictionary(request);
-            if (merged.Count == 0 && picturesMap.Count == 0)
-            {
-                Log.Warn($"帳票作成失敗（不正なリクエスト: data/tables/pictures が空）. correlationId={correlationId}");
-                return Request.CreateErrorResponse(
-                    HttpStatusCode.BadRequest,
-                    "印刷データが指定されていません。data / tables / pictures のいずれかに値を指定してください。");
+                Log.Warn($"帳票PDF {addLogDetail}. correlationId={correlationId}");
+                return Request.CreateErrorResponse(addErrStatus, addErrMessage);
             }
 
             Stream pdfStream;
             try
             {
-                pdfStream = _pdfService.GeneratePdf(templatePath, merged, picturesMap);
+                byte[] mainBytes;
+                using (var genStream = _pdfService.GeneratePdf(ctx.TemplatePath, ctx.MergedData, ctx.Pictures))
+                using (var ms = new MemoryStream())
+                {
+                    genStream.CopyTo(ms);
+                    mainBytes = ms.ToArray();
+                }
+
+                if (string.IsNullOrEmpty(appendPath))
+                {
+                    pdfStream = new MemoryStream(mainBytes) { Position = 0 };
+                }
+                else
+                {
+                    var appendBytes = File.ReadAllBytes(appendPath);
+                    var merged = PdfMergeService.MergePdfs(new[] { mainBytes, appendBytes });
+                    pdfStream = new MemoryStream(merged) { Position = 0 };
+                }
             }
             catch (Exception ex)
             {
-                Log.Error($"帳票作成失敗（例外）. correlationId={correlationId}", ex);
+                Log.Error($"帳票PDF失敗（例外）. correlationId={correlationId}", ex);
                 throw;
             }
 
-            // PDF をストリームで返却（バイト配列に全読み込みしない）。
             var response = new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StreamContent(pdfStream)
+                Content = new StreamContent(pdfStream),
             };
-
             response.Content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+            Log.Info($"帳票PDF完了. correlationId={correlationId}, template='{ctx.TemplateFileName}'");
+            return response;
+        }
 
-            // ファイル名はクライアント（フロント）側で決める運用のため、Content-Disposition / filename は付けない。
-            Log.Info($"帳票作成完了. correlationId={correlationId}, template='{request.TemplateFileName}'");
+        [HttpPost]
+        [Route("excel")]
+        public HttpResponseMessage GenerateExcel([FromBody] GemBoxPrintRequestDto request)
+        {
+            var correlationId = PrintGemBoxRequestUtils.GetCorrelationId(Request);
+            Log.Info($"帳票Excel（埋め込み）開始. correlationId={correlationId}");
+
+            var prep = PrintGemBoxRequestUtils.TryPrepareGemBoxPrint(request, _templateBasePath);
+            if (!prep.Ok)
+            {
+                Log.Warn($"帳票Excel {prep.FailureLogDetail}. correlationId={correlationId}");
+                return Request.CreateErrorResponse(prep.ErrorStatus, prep.ErrorMessage);
+            }
+
+            var ctx = prep.Prepared;
+            Stream excelStream;
+            try
+            {
+                excelStream = _pdfService.GenerateFilledExcel(ctx.TemplatePath, ctx.MergedData, ctx.Pictures);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"帳票Excel失敗（例外）. correlationId={correlationId}", ex);
+                throw;
+            }
+
+            var response = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(excelStream),
+            };
+            response.Content.Headers.ContentType =
+                new MediaTypeHeaderValue("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            Log.Info($"帳票Excel（埋め込み）完了. correlationId={correlationId}, template='{ctx.TemplateFileName}'");
             return response;
         }
     }

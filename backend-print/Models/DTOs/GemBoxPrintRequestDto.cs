@@ -19,5 +19,11 @@ namespace backend_print.Models.DTOs
 
         [JsonProperty("pictures")]
         public Dictionary<string, string> Pictures { get; set; }
+
+        /// <summary>
+        /// 末尾に結合する既存PDFのフルパス（任意）。空なら GemBox 生成PDFのみ。
+        /// </summary>
+        [JsonProperty("addPdfPath")]
+        public string AddPdfPath { get; set; }
     }
 }
